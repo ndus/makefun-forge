@@ -35,6 +35,7 @@ export class GitStore {
     return this.put('tree', Buffer.concat(entries.flatMap(e => [Buffer.from(`${e.mode} ${e.name}\0`), Buffer.from(e.sha, 'hex')])));
   }
   readTree(sha: string): TreeEntry[] {
+    const cached = treeCache.get(this.get(sha, 'tree')); if (cached) return cached;
     const bytes = this.get(sha, 'tree').payload;
     const entries: TreeEntry[] = [];
     for (let offset = 0; offset < bytes.length;) {
@@ -43,7 +44,7 @@ export class GitStore {
       entries.push({ mode: bytes.toString('ascii', offset, space), name: bytes.toString('utf8', space + 1, nul), sha: bytes.subarray(nul + 1, nul + 21).toString('hex') });
       offset = nul + 21;
     }
-    return entries;
+    return cachePut(treeCache, this.get(sha), entries);
   }
   writeFiles(files: Files): string {
     const build = (prefix: string): string => {
@@ -60,9 +61,10 @@ export class GitStore {
     return build('');
   }
   commit(sha: string): { tree: string; parents: string[]; message: string } {
+    const cached = commitCache.get(this.get(sha, 'commit')); if (cached) return cached;
     const text = this.get(sha, 'commit').payload.toString('utf8');
     const split = text.indexOf('\n\n'), headers = text.slice(0, split).split('\n');
-    return { tree: headers.find(h => h.startsWith('tree '))!.slice(5), parents: headers.filter(h => h.startsWith('parent ')).map(h => h.slice(7)), message: text.slice(split + 2).replace(/\n$/, '') };
+    return cachePut(commitCache, this.get(sha), { tree: headers.find(h => h.startsWith('tree '))!.slice(5), parents: headers.filter(h => h.startsWith('parent ')).map(h => h.slice(7)), message: text.slice(split + 2).replace(/\n$/, '') });
   }
   files(commit?: string): Files {
     const files: Files = new Map();
@@ -111,4 +113,16 @@ export class GitStore {
     }
     return result;
   }
+}
+
+// Shared across receive-pack staging stores, keyed by object identity rather than refs.
+// At most 4096 small objects per cache; large payloads are deliberately not retained.
+const treeCache = new Map<GitObject, TreeEntry[]>();
+const commitCache = new Map<GitObject, { tree: string; parents: string[]; message: string }>();
+function cachePut<T>(cache: Map<GitObject, T>, object: GitObject, value: T): T {
+  if (object.payload.length <= 4096) {
+    if (cache.size >= 4096) cache.delete(cache.keys().next().value!);
+    cache.set(object, value);
+  }
+  return value;
 }
