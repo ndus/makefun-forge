@@ -1,9 +1,11 @@
 import { createServer, type IncomingMessage } from 'node:http';
 import { ForgeStore, HttpError, requireString } from './store.ts';
 import { viewer } from './identity.ts';
+import { graphql } from './graphql.ts';
+import { mcp, rpcError } from './mcp.ts';
 import { gitHttp } from './git-http.ts';
 
-async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
+async function readBody(req: IncomingMessage, anyJson = false): Promise<any> {
   const chunks: Buffer[] = [];
   let size = 0;
   for await (const chunk of req) {
@@ -15,6 +17,7 @@ async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> 
   let body: unknown;
   try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); }
   catch { throw new HttpError(400, 'Malformed JSON body'); }
+  if (anyJson) return body;
   if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Expected a JSON object');
   return body as Record<string, unknown>;
 }
@@ -26,7 +29,7 @@ export function createApp(store = new ForgeStore(), token = process.env.MAKEFUN_
     res.setHeader('x-github-request-id', (++requestId).toString(16).padStart(12, '0'));
     const send = (status: number, body?: unknown) => {
       res.statusCode = status;
-      res.end(status === 204 ? undefined : `${JSON.stringify(body)}\n`);
+      res.end(status === 204 || body === undefined ? undefined : `${JSON.stringify(body)}\n`);
     };
     try {
       const origin = `http://${req.headers.host ?? 'localhost'}`;
@@ -43,6 +46,17 @@ export function createApp(store = new ForgeStore(), token = process.env.MAKEFUN_
         if (method === 'GET' && parts.slice(2).join('/') === 'info/refs') return await gitHttp(req, res, repo, url.searchParams.get('service') ?? '', true);
         if (method === 'POST' && parts.length === 3) return await gitHttp(req, res, repo, parts[2], false);
         throw new HttpError(404, 'Not Found');
+      }
+      if (url.pathname === '/api/graphql' || url.pathname === '/mcp') {
+        if (method !== 'POST') return send(405, { message: 'Method Not Allowed' });
+        let input: unknown;
+        try { input = await readBody(req, true); }
+        catch (e) {
+          if (e instanceof HttpError && e.status === 400) return send(400, url.pathname === '/mcp' ? rpcError(null, -32700, 'Parse error') : { errors: [{ message: e.message }] });
+          throw e;
+        }
+        if (url.pathname === '/api/graphql') return send(200, graphql(store, input));
+        const reply = mcp(store, input, origin); return send(reply.status, reply.body);
       }
       const body = await readBody(req);
       const route = parts.join('/').replace(/\/$/, '');
