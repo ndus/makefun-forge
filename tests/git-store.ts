@@ -1,0 +1,25 @@
+import assert from 'node:assert/strict';
+import { GitStore } from '../git-store.ts';
+const git = new GitStore();
+assert.equal(git.put('blob', ''), 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391');
+assert.equal(git.tree([]), '4b825dc642cb6eb9a060e54bf8d69288fbee4904');
+const blob = git.put('blob', Buffer.from([0, 255, 10, 128]));
+const files = new Map([['dir/file', { sha: blob, mode: '100644' }]]);
+const root = git.createCommit(files, [], 'root', 'A <a@example.invalid>', 1735689600);
+assert.deepEqual(git.files(root), files);
+const leftFiles = new Map(files), rightFiles = new Map(files);
+leftFiles.set('left', { sha: git.put('blob', 'left'), mode: '100644' });
+rightFiles.set('right', { sha: git.put('blob', 'right'), mode: '100644' });
+const left = git.createCommit(leftFiles, [root], 'left', 'A <a@example.invalid>', 1735689601);
+const right = git.createCommit(rightFiles, [root], 'right', 'A <a@example.invalid>', 1735689602);
+assert.equal(git.mergeBase(left, right), root);
+assert.deepEqual([...git.merge(left, right)!.keys()].sort(), ['dir/file', 'left', 'right']);
+leftFiles.set('dir/file', { sha: git.put('blob', 'edit a'), mode: '100644' });
+rightFiles.set('dir/file', { sha: git.put('blob', 'edit b'), mode: '100644' });
+const conflictA = git.createCommit(leftFiles, [root], 'a', 'A <a@example.invalid>', 1735689603);
+const conflictB = git.createCommit(rightFiles, [root], 'b', 'A <a@example.invalid>', 1735689604);
+assert.equal(git.merge(conflictA, conflictB), undefined);
+// Git orders a directory as if its name has a trailing slash.
+const tree = git.tree([{ name: 'foo', mode: '40000', sha: git.tree([]) }, { name: 'foo.bar', mode: '100644', sha: blob }]);
+assert.deepEqual(git.readTree(tree).map(e => e.name), ['foo.bar', 'foo']);
+console.log('PASS canonical object IDs, binary nested trees, Git tree ordering, ancestry and three-way merge');
