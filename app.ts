@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage } from 'node:http';
 import { ForgeStore, HttpError, requireString } from './store.ts';
 import { viewer } from './identity.ts';
+import { gitHttp } from './git-http.ts';
 
 async function readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   const chunks: Buffer[] = [];
@@ -34,10 +35,16 @@ export function createApp(store = new ForgeStore(), token = process.env.MAKEFUN_
       // Harness boot probe is outside the four authenticated application surfaces.
       if (url.pathname === '/healthz' && method === 'GET') return send(200, { ok: true });
       if (!token || req.headers.authorization !== `Bearer ${token}`) throw new HttpError(401, 'Bad credentials');
-      const body = await readBody(req);
       let parts: string[];
       try { parts = url.pathname.split('/').slice(1).map(decodeURIComponent); }
       catch { throw new HttpError(400, 'Invalid URL encoding'); }
+      if (parts[1]?.endsWith('.git')) {
+        const repo = store.repo(parts[0], parts[1].slice(0, -4));
+        if (method === 'GET' && parts.slice(2).join('/') === 'info/refs') return await gitHttp(req, res, repo, url.searchParams.get('service') ?? '', true);
+        if (method === 'POST' && parts.length === 3) return await gitHttp(req, res, repo, parts[2], false);
+        throw new HttpError(404, 'Not Found');
+      }
+      const body = await readBody(req);
       const route = parts.join('/').replace(/\/$/, '');
       const page = <T>(items: T[]) => {
         const positive = (value: string | null, fallback: number) => value && /^\d+$/.test(value) && Number(value) > 0 ? Number(value) : fallback;

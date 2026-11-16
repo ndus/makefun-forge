@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { GitStore } from '../git-store.ts';
+import { makePack, readPack, reachable } from '../git-pack.ts';
+import { readPack as inspectPack } from '../docs/conformance/git-client.ts';
+const dir = mkdtempSync(join(tmpdir(), 'pack-test-'));
+const run = (args: string[], input?: string | Buffer): Promise<Buffer> => new Promise((resolve, reject) => {
+  const child = spawn('git', args, { cwd: dir }); const chunks: Buffer[] = []; let error = '';
+  child.stdout.on('data', c => chunks.push(c)); child.stderr.on('data', c => error += c);
+  child.on('error', reject); child.on('close', code => code === 0 ? resolve(Buffer.concat(chunks)) : reject(new Error(error)));
+  child.stdin.end(input);
+});
+const git = (...args: string[]) => run(['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', ...args]);
+try {
+  await git('init', '-q', '-b', 'main');
+  const content = Array.from({ length: 10000 }, (_, i) => `line ${i} ${i * 123}\n`).join('');
+  writeFileSync(join(dir, 'file'), content); await git('add', '.'); await git('commit', '-qm', 'first');
+  const first = (await git('rev-parse', 'HEAD')).toString().trim();
+  const initial = await run(['pack-objects', '--stdout', '--revs'], first + '\n');
+  const store = readPack(initial, new GitStore());
+  writeFileSync(join(dir, 'file'), content + 'a small change\n'); await git('commit', '-qam', 'second');
+  const second = (await git('rev-parse', 'HEAD')).toString().trim();
+  const thin = await run(['pack-objects', '--stdout', '--revs', '--thin'], `${second}\n^${first}\n`);
+  const imported = readPack(thin, store);
+  assert.equal(imported.files(second).size, 1);
+  assert.equal(imported.get(imported.files(second).get('file')!.sha).payload.toString(), content + 'a small change\n');
+  assert.throws(() => readPack(thin, new GitStore()), /Unresolved delta base/);
+  const full = await run(['pack-objects', '--stdout', '--revs', '--delta-base-offset'], second + '\n');
+  const inspected = inspectPack(full); assert(inspected.deltaCount > 0);
+  const offsets = readPack(full, new GitStore());
+  assert.deepEqual(offsets.objects, imported.objects);
+  const generated = makePack(imported, reachable(imported, [second]).objects);
+  await run(['index-pack', '--stdin', '--strict'], generated);
+  const corrupt = Buffer.from(generated); corrupt[20] ^= 1;
+  assert.throws(() => readPack(corrupt, store), /checksum/);
+  assert.throws(() => readPack(generated.subarray(0, -1), store));
+  assert.equal(store.objects.size, 3);
+  console.log('PASS 6 pack cases: real Git thin REF_DELTA, OFS_DELTA, byte equality, Git strict index-pack, corrupt checksum, truncation');
+} finally { rmSync(dir, { recursive: true, force: true }); }
