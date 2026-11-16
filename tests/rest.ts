@@ -47,6 +47,23 @@ globalThis.fetch = async (input, init) => {
 };
 let failed = 0;
 try {
+  const createRepository = (name: string) => fetch(baseUrl + '/api/v3/user/repos', {
+    method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  assert.equal((await createRepository('duplicate-regression')).status, 201);
+  const duplicate = await createRepository('duplicate-regression');
+  assert.equal(duplicate.status, 422);
+  const duplicateBody = await duplicate.text();
+  assert.match(duplicateBody, /already exists/i);
+  assert.deepEqual(JSON.parse(duplicateBody), {
+    message: 'Validation Failed',
+    errors: [{ resource: 'Repository', code: 'custom', field: 'name', message: 'name already exists on this account' }],
+  });
+  const invalid = await createRepository('invalid/name');
+  assert.equal(invalid.status, 422);
+  assert.match((await invalid.json()).message, /invalid/i);
+  console.log('PASS duplicate repository REST response and invalid-name validation');
   for (const check of [...restChecks(), ...restProtocolChecks()]) {
     const result = await check.fn({ baseUrl, token, scenario: buildScenario(), signal: AbortSignal.timeout(10_000), deadlineMs: performance.now() + 10_000, timeoutMs: 10_000, log() {} });
     console.log(`${result.ok ? 'PASS' : 'FAIL'} ${check.id}${result.ok ? '' : ': ' + result.detail}`);

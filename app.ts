@@ -185,7 +185,9 @@ export function createApp(store = new ForgeStore(), token = process.env.MAKEFUN_
       throw new HttpError(404, 'Not Found');
     } catch (error) {
       if (!(error instanceof HttpError)) process.stderr.write(`[app] ${error instanceof Error ? error.stack : String(error)}\n`);
-      send(error instanceof HttpError ? error.status : 500, { message: error instanceof HttpError ? error.message : 'Internal Server Error' });
+      send(error instanceof HttpError ? error.status : 500, error instanceof HttpError
+        ? { message: error.message, ...(error.errors ? { errors: error.errors } : {}) }
+        : { message: 'Internal Server Error' });
     }
   });
 }

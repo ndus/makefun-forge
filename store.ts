@@ -3,7 +3,10 @@ import { viewer } from './identity.ts';
 
 export class HttpError extends Error {
   status: number;
-  constructor(status: number, message: string) { super(message); this.status = status; }
+  errors?: { resource: string; code: string; field: string; message: string }[];
+  constructor(status: number, message: string, errors?: HttpError['errors']) {
+    super(message); this.status = status; this.errors = errors;
+  }
 }
 export function requireString(value: unknown, field: string): string {
   if (typeof value !== 'string' || !value.trim()) throw new HttpError(422, `${field} is required`);
@@ -51,7 +54,10 @@ export class ForgeStore {
   }
   createRepo(body: Record<string, unknown>): Repository {
     const name = requireString(body.name, 'name');
-    if (!/^[\w.-]+$/.test(name) || name === '.' || name === '..' || this.repos.has(name)) throw new HttpError(422, 'Invalid or duplicate repository name');
+    if (!/^[\w.-]+$/.test(name) || name === '.' || name === '..') throw new HttpError(422, 'Invalid repository name');
+    if (this.repos.has(name)) throw new HttpError(422, 'Validation Failed', [
+      { resource: 'Repository', code: 'custom', field: 'name', message: 'name already exists on this account' },
+    ]);
     const repo = new Repository(this.nextId++, name, this.now());
     repo.description = typeof body.description === 'string' ? body.description : '';
     repo.private = body.private === true;
